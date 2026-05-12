@@ -1,0 +1,101 @@
+import subprocess
+import tkinter as tk
+from tkinter import ttk
+import json
+import os
+
+
+class app:
+    def __init__(self):
+        self.swapamount: int = 0
+        self.enabled: bool = False
+
+        self.main()
+
+    def read_saved(self):
+        if not os.path.exists("/etc/ram_download.json"):
+            with open("/etc/ram_download.json", "w") as f:
+                json.dump({}, f)
+        
+        with open("/etc/ram_download.json", "r") as f:
+            data = json.load(f)
+
+        try:
+            self.swapamount = data["swapamount"]
+            self.enabled = data["enabled"]
+        except KeyError:
+            pass
+
+    def save(self):
+        with open("/etc/ram_download.json", "w") as f:
+            json.dump(
+                {"swapamount": self.swapamount, "enabled": self.enabled},
+                f
+            )
+
+    def create_swapfile(self, size_mb: int, path="/swapfile"):
+        try:
+            subprocess.run(["swapoff", path], check=False)
+            if os.path.exists(path):
+                os.remove(path)
+
+            result = subprocess.run(
+                ["stat", "-f", "-c", "%T", os.path.dirname(path)],
+                capture_output=True, text=True
+            )
+            is_btrfs = "btrfs" in result.stdout.lower()
+
+            if is_btrfs:
+                subprocess.run(["truncate", "-s", "0", path], check=True)
+                subprocess.run(["chattr", "+C", path], check=True)
+                subprocess.run(
+                    ["btrfs", "property", "set", path, "compression", "none"],
+                    check=False
+                )
+
+            chunk = b"\x00" * (1024 * 1024)  # 1 MB
+            with open(path, "wb") as f:
+                for i in range(size_mb):
+                    f.write(chunk)
+                    self.progress["value"] = i + 1
+                    self.root.update_idletasks()
+            
+            subprocess.run(["chmod", "600", path], check=True)
+            subprocess.run(["mkswap", path], check=True)
+            subprocess.run(["swapon", path], check=True)
+            return True, f"Swapfile of {size_mb}MB created and enabled."
+        except (subprocess.CalledProcessError, OSError) as e:
+            return False, f"Command failed: {e}"
+
+    def update_value(self):
+        self.swapamount = int(self.entry.get())
+        self.progress["maximum"] = self.swapamount
+        self.progress["value"] = 0
+        self.create_swapfile(self.swapamount)
+
+    def main(self):
+        self.read_saved()
+        self.root = tk.Tk()
+
+        title = tk.Label(self.root, text="Download RAM")
+        title.grid(row=1, column=2)
+
+        self.entry = tk.Entry(self.root)
+        self.entry.grid(row=2, column=3)
+
+        ram_title = tk.Label(self.root, text="Swap size (MB)")
+        ram_title.grid(row=2, column=1)
+
+        self.entry.delete(0, tk.END)
+        self.entry.insert(0, str(self.swapamount))
+
+        tk.Button(self.root, text="Update", command=self.update_value).grid(row=3, column=1)
+
+        self.progress = ttk.Progressbar(self.root, length=200, maximum=self.swapamount)
+        self.progress.grid(row=3, column=2, columnspan=2, pady=5)
+
+        self.root.mainloop()
+        self.save()
+
+APP = app()
+
